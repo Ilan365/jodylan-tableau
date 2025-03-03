@@ -1,118 +1,144 @@
 import streamlit as st
 import pandas as pd
-import re
-import pyexcel as p
+import numpy as np
+from st_aggrid import AgGrid
+from st_aggrid.grid_options_builder import GridOptionsBuilder
 
-# Définition des catégories de tailles
-size_categories = {
-    "34/36 et 46/48": [34, 36, 46, 48],
-    "38/40 et 42/44": [38, 40, 42, 44],
-    "50/52": [50, 52],
-    "54/56": [54, 56],
-    "58/60": [58, 60],
-    "62/64": [62, 64],
-}
+st.title("Calcul des articles par fourchette de taille")
 
-def extract_quantity_and_size(df):
-    """
-    Détecte la colonne contenant "taille" avec un nombre avant et après.
-    Corrige l'erreur qui omet des lignes au début du tableau.
-    """
-    for col in df.columns:
-        for idx, value in enumerate(df[col]):
-            if isinstance(value, str) and "taille" in value.lower():
-                try:
-                    prev_value = df.iloc[idx, col - 1]
-                    next_value = df.iloc[idx, col + 1]
-                    if str(prev_value).isdigit() and str(next_value).isdigit():
-                        return df.iloc[idx :, col - 1 : col + 2].dropna()  # Prendre toutes les lignes en dessous
-                except (IndexError, ValueError):
-                    continue
-    return None
+st.write("""
+Cette application vous permet de copier-coller un jeu de données au format [nombre] \ttaille\t[fourchette de taille] ou [nombre] \ttaille\t[taille1/taille2].
+Le tableau se remplira automatiquement et les totaux par fourchette de taille seront calculés.
+""")
 
-def process_excel(file):
-    """Traite un fichier Excel et regroupe les quantités par fourchette de tailles."""
-    df = pd.read_excel(file, engine="openpyxl")
+# Fonction pour parser les données collées en évitant la perte de quantité
+def parse_text_data(text):
+    lines = text.strip().split('\n')
+    data = []
+    for line in lines:
+        parts = [p.strip() for p in line.split('\t') if p.strip()]
+        if len(parts) == 3 and parts[1].lower() == 'taille':
+            try:
+                qty = int(parts[0])
+                tailles = parts[2].split('/')  # Gérer les tailles multiples comme "38/40"
+                nb_tailles = len(tailles)
+                base_qty = qty // nb_tailles  # Répartition de base
+                remainder = qty % nb_tailles  # Reste à répartir
+                
+                for i, taille in enumerate(tailles):
+                    taille = int(taille)
+                    if 34 <= taille <= 64 and taille % 2 == 0:
+                        adjusted_qty = base_qty + (1 if i < remainder else 0)  # Répartir le reste équitablement
+                        data.append({"Quantité": adjusted_qty, "taille": "taille", "Fourchette de taille": taille})
+            except ValueError:
+                continue
+    return pd.DataFrame(data)
+
+# Champ de texte pour coller les données en bulk
+st.subheader("Coller vos données")
+text_data = st.text_area(
+    "Collez vos données ici (format: nombre\ttaille\tfourchette de taille ou nombre\ttaille\ttaille1/taille2)",
+    height=300,
+    placeholder="8\ttaille\t36\n14\ttaille\t38/40\n31\ttaille\t42/44\n..."
+)
+
+# Bouton pour déclencher l'analyse
+if st.button("Analyser les données"):
+    if text_data.strip():
+        parsed_data = parse_text_data(text_data)
+        if not parsed_data.empty:
+            st.session_state.table_data = parsed_data
+        else:
+            st.warning("Aucune donnée valide n'a été trouvée. Veuillez vérifier votre saisie.")
+
+# Création du tableau éditable avec AgGrid
+def create_aggrid_table(data):
+    gb = GridOptionsBuilder.from_dataframe(data)
+    gb.configure_column("Quantité", editable=True, type=["numericColumn", "numberColumnFilter"])
+    gb.configure_column("taille", editable=False)
+    gb.configure_column("Fourchette de taille", editable=True, type=["numericColumn", "numberColumnFilter"])
+    return AgGrid(
+        data,
+        gridOptions=gb.build(),
+        update_mode='MODEL_CHANGED',
+        fit_columns_on_grid_load=True,
+        theme='streamlit',
+        height=400,
+        allow_unsafe_jscode=True,
+        key="aggrid_table"
+    )
+
+# Affichage du tableau éditable si des données existent
+if 'table_data' in st.session_state and not st.session_state.table_data.empty:
+    st.subheader("Données analysées")
+    grid_response = create_aggrid_table(st.session_state.table_data)
+    st.session_state.table_data = grid_response['data']
+
+# Fonction pour calculer les totaux par fourchette de taille
+def calculate_totals(data):
+    tailles = {
+        "34-48": 0,  # 34/36/38/40/42/44/46/48
+        "50-52": 0,
+        "54-56": 0,
+        "58-60": 0,
+        "62-64": 0
+    }
     
-    size_totals = {key: 0 for key in size_categories}
-    extracted_data = extract_quantity_and_size(df)
-    
-    if extracted_data is None:
-        return "Erreur : Impossible de localiser les colonnes à analyser."
-
-    st.write("🔍 **Vérification des données extraites :**", extracted_data)  # Debugging
-
-    for _, row in extracted_data.iterrows():
+    for _, row in data.iterrows():
         try:
-            quantity, taille_txt, taille_num = int(row.iloc[0]), str(row.iloc[1]), int(row.iloc[2])
-            if "taille" in taille_txt.lower():
-                for category, sizes in size_categories.items():
-                    if taille_num in sizes:
-                        size_totals[category] += quantity
-                        break
-        except (ValueError, IndexError):
+            quantite = int(row["Quantité"])
+            taille = int(row["Fourchette de taille"])
+            if 34 <= taille <= 48:
+                tailles["34-48"] += quantite
+            elif 50 <= taille <= 52:
+                tailles["50-52"] += quantite
+            elif 54 <= taille <= 56:
+                tailles["54-56"] += quantite
+            elif 58 <= taille <= 60:
+                tailles["58-60"] += quantite
+            elif 62 <= taille <= 64:
+                tailles["62-64"] += quantite
+        except ValueError:
             continue
+    return tailles
 
-    total_articles = sum(size_totals.values())
-    result_df = pd.DataFrame(list(size_totals.items()), columns=["Fourchette de tailles", "Nombre total de pièces"])
-    result_df.loc[len(result_df)] = ["Total d'articles", total_articles]
+# Calcul des résultats si des données existent
+if 'table_data' in st.session_state and not st.session_state.table_data.empty:
+    totals = calculate_totals(st.session_state.table_data)
+    total_articles = sum(totals.values())
     
-    return result_df
-
-def process_ods(file):
-    """Traite un fichier ODS et détecte dynamiquement les bonnes colonnes."""
-    data = p.get_book_dict(file_type="ods", file_content=file.read())
-
-    # 🔍 1️⃣ Vérifier si "BL" existe, sinon choisir l'onglet avec le plus de données
-    sheet_name = "BL" if "BL" in data else max(data, key=lambda k: len(data[k]))
-
-    df = pd.DataFrame(data[sheet_name])
-
-    # 🔍 2️⃣ Identifier la colonne contenant "taille" et les valeurs associées
-    extracted_data = extract_quantity_and_size(df)
-    if extracted_data is None:
-        return "Erreur : Impossible de localiser les colonnes à analyser."
-
-    st.write("🔍 **Vérification des données extraites (ODS) :**", extracted_data)  # Debugging
-
-    size_totals = {key: 0 for key in size_categories}
-
-    for _, row in extracted_data.iterrows():
-        try:
-            quantity, taille_txt, taille_num = int(row.iloc[0]), str(row.iloc[1]), int(row.iloc[2])
-            if "taille" in taille_txt.lower():
-                for category, sizes in size_categories.items():
-                    if taille_num in sizes:
-                        size_totals[category] += quantity
-                        break
-        except (ValueError, IndexError):
-            continue
-
-    total_articles = sum(size_totals.values())
-    result_df = pd.DataFrame(list(size_totals.items()), columns=["Fourchette de tailles", "Nombre total de pièces"])
-    result_df.loc[len(result_df)] = ["Total d'articles", total_articles]
+    st.header("Résultats de l'analyse")
     
-    return result_df
-
-def main():
-    st.title("Analyse automatique des bordereaux")
-    st.write("Téléversez un fichier Excel ou ODS contenant un bordereau avec une colonne 'Quantité par taille'.")
+    col1, col2 = st.columns(2)
     
-    uploaded_files = st.file_uploader("Téléverser des fichiers", type=["xlsx", "xls", "ods"], accept_multiple_files=True)
+    with col1:
+        st.metric("Tailles 34-48", totals["34-48"])
+        st.metric("Tailles 50-52", totals["50-52"])
+        st.metric("Tailles 54-56", totals["54-56"])
     
-    if uploaded_files:
-        for uploaded_file in uploaded_files:
-            st.subheader(f"Résultats pour : {uploaded_file.name}")
-            with st.spinner("Analyse en cours..."):
-                if uploaded_file.name.endswith(".ods"):
-                    result = process_ods(uploaded_file)
-                else:
-                    result = process_excel(uploaded_file)
-
-                if isinstance(result, str):
-                    st.write(result)
-                else:
-                    st.table(result)
-
-if __name__ == "__main__":
-    main()
+    with col2:
+        st.metric("Tailles 58-60", totals["58-60"])
+        st.metric("Tailles 62-64", totals["62-64"])
+        st.metric("Total des articles", total_articles)
+    
+    # Afficher le graphique des résultats
+    st.subheader("Répartition par tailles")
+    chart_data = pd.DataFrame({
+        "Fourchette de tailles": list(totals.keys()),
+        "Nombre d'articles": list(totals.values())
+    })
+    st.bar_chart(chart_data.set_index("Fourchette de tailles"))
+    
+    # Option pour télécharger les résultats
+    results_df = pd.DataFrame({
+        "Fourchette de tailles": list(totals.keys()) + ["Total"],
+        "Nombre d'articles": list(totals.values()) + [total_articles]
+    })
+    
+    csv = results_df.to_csv(index=False)
+    st.download_button(
+        label="Télécharger les résultats (CSV)",
+        data=csv,
+        file_name='resultats_analyse_tailles.csv',
+        mime='text/csv',
+    )
