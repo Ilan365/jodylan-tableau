@@ -1,3 +1,5 @@
+streamlit
 pandas
 openpyxl
-streamlit
+pyexcel
+pyexcel-ods3
