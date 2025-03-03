@@ -3,3 +3,4 @@ pandas
 openpyxl
 pyexcel
 pyexcel-ods3
+st-aggrid
